@@ -1,3 +1,7 @@
 requests
 beautifulsoup4
-git+https://github.com/attardi/wikiextractor.git
+simplejson
+mecab-python3
+neologn
+fasttext
+gensim
