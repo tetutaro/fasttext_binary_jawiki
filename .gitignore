@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# intermediate files and directories
+jawiki-*.xml.bz2
+jawiki_*
