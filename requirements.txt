@@ -2,6 +2,8 @@ requests
 beautifulsoup4
 simplejson
 mecab-python3
-neologn
+neologdn
 fasttext
 gensim
+# suppress warnings
+python-Levenshtein

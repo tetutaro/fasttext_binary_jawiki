@@ -396,7 +396,7 @@ def main() -> None:
     )
     parser.add_argument(
         '-d', '--dictionary', type=str, default='mecab_ipadic',
-        help='path of MeCab dictonary or [ipa|jumap|neologd]'
+        help='path of MeCab dictonary or [ipa|juman|neologd]'
     )
     parser.add_argument(
         '-m', '--model', type=str, choices=['skipgram', 'cbow'],
