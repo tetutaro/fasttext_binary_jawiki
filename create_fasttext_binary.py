@@ -301,17 +301,27 @@ class Processor(object):
             json_dir_files[fn.split(os.sep)[1]].append(fn)
         del json_files
         # ファイルの変換
-        processes = list()
-        for dn, fns in json_dir_files.items():
-            wn = os.path.join(self.temp_dir, f'{dn}.txt')
-            process = Process(
-                target=wakati_each_dir,
-                kwargs={'tagger': self.tagger, 'wn': wn, 'fns': fns}
-            )
-            process.start()
-            processes.append(process)
-        for process in processes:
-            process.join()
+        if sys.version_info.major == 3 and sys.version_info.minor > 7:
+            # Python 3.8 以降はmultiprocessingがうまく動かない
+            # （Taggerの共有をなんとかする必要がある）ので
+            # 逐次的に処理する
+            for dn, fns in json_dir_files.items():
+                wn = os.path.join(self.temp_dir, f'{dn}.txt')
+                wakati_each_dir(tagger=self.tagger, wn=wn, fns=fns)
+        else:
+            # Python 3.7 までだと何とかなってしまうので
+            # multiprocessing.Processで簡易的な並列化
+            processes = list()
+            for dn, fns in json_dir_files.items():
+                wn = os.path.join(self.temp_dir, f'{dn}.txt')
+                process = Process(
+                    target=wakati_each_dir,
+                    kwargs={'tagger': self.tagger, 'wn': wn, 'fns': fns}
+                )
+                process.start()
+                processes.append(process)
+            for process in processes:
+                process.join()
         # 中間ファイルをまとめてひとつのfastText学習量ファイルにする
         cmd = f'cat {self.temp_dir}/* > {self.train_data}'
         try:
