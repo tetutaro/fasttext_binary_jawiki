@@ -39,7 +39,13 @@ REPLACE_PATTERNS: List[Tuple[str, str]] = [
 ]
 
 
-def wakati_each_dir(tagger: Tagger, wn: str, fns: List[str]) -> None:
+def wakati_each_dir(
+    tagger: Tagger,
+    wn: str,
+    fns: List[str],
+    use_original: bool,
+    offset_original: int
+) -> None:
     # 中間ファイル
     wf = open(wn, 'wt')
     for fn in fns:
@@ -62,7 +68,9 @@ def wakati_each_dir(tagger: Tagger, wn: str, fns: List[str]) -> None:
                     _wakati_each_sentence(
                         tagger=tagger,
                         sentence=sentence,
-                        wf=wf
+                        wf=wf,
+                        use_original=use_original,
+                        offset_original=offset_original
                     )
                 line = rf.readline()
     wf.close()
@@ -73,7 +81,9 @@ def wakati_each_dir(tagger: Tagger, wn: str, fns: List[str]) -> None:
 def _wakati_each_sentence(
     tagger: Tagger,
     sentence: str,
-    wf: TextIO
+    wf: TextIO,
+    use_original: bool,
+    offset_original: int
 ) -> None:
     '''文章を正規化し、分かち書きして、ファイルに書き込む
     '''
@@ -89,7 +99,27 @@ def _wakati_each_sentence(
     if len(sentence) == 0:
         return
     # 分かち書き
-    wakatied = tagger.parse(sentence).strip()
+    if use_original:
+        # 単語の原型を使う場合
+        words = list()
+        nodes = tagger.parse(sentence)
+        for node in nodes.splitlines():
+            node = node.strip()
+            if node == 'EOS':
+                break
+            try:
+                surface, features_str = node.split('\t', 1)
+            except Exception:
+                continue
+            features = features_str.split(',')
+            if features[offset_original] == '*':
+                # 未知語の場合は表層語を用いる
+                words.append(surface)
+            else:
+                words.append(features[offset_original])
+        wakatied = ' '.join(words)
+    else:
+        wakatied = tagger.parse(sentence).strip()
     # あまりにも短い文章、あまりにも長い文章はスキップ
     num_words = len(wakatied.split(' '))
     if (
@@ -111,6 +141,7 @@ class Processor(object):
     def __init__(
         self: Processor,
         dictionary: str,
+        original: bool,
         model: str,
         dim: int,
         epoch: int,
@@ -118,6 +149,7 @@ class Processor(object):
         logger: Logger
     ) -> None:
         self.dictionary = dictionary
+        self.use_original = original
         self.model = model
         if dim < 100:
             raise ValueError(f'size of word vectors is too small: {dim}')
@@ -132,8 +164,8 @@ class Processor(object):
         self.mincount = mincount
         self.logger = logger
         self._download_wikiextractor()
-        self._load_mecab()
         self._scrape_wikimedia()
+        self._load_mecab()
         return
 
     def _download_wikiextractor(self: Processor) -> None:
@@ -151,7 +183,11 @@ class Processor(object):
         if os.path.isdir(self.dictionary):
             # load local dictionary
             self.logger.info(f'loading local dictionary: {self.dictionary}')
-            self.tagger = Tagger(f'-O wakati -d {self.dictionary}')
+            if self.use_original:
+                self.tagger = Tagger(f'-d {self.dictionary}')
+            else:
+                self.tagger = Tagger(f'-O wakati -d {self.dictionary}')
+            self.offset_original = 6
             return
         elif self.dictionary not in self.INSTALLED_DICTIONARIES:
             raise ValueError(f'dictionary not found: {self.dictionary}')
@@ -192,7 +228,14 @@ class Processor(object):
             )
         # create tagger
         self.logger.info(f'loading installed dictionary: {self.dictionary}')
-        self.tagger = Tagger(f'-O wakati -d{dic_path}')
+        if self.use_original:
+            self.tagger = Tagger(f'-d {dic_path}')
+        else:
+            self.tagger = Tagger(f'-O wakati -d {dic_path}')
+        if self.dictionary == 'juman':
+            self.offset_original = 4
+        else:
+            self.offset_original = 6
         return
 
     def _scrape_wikimedia(self: Processor) -> None:
@@ -286,13 +329,19 @@ class Processor(object):
         単語（形態素）毎に分かち書きし、
         fastTextの学習用データにする
         '''
-        # 学習量データ
-        self.train_data = f'jawiki_{self.version}.txt'
+        # 学習用データ
+        if self.use_original:
+            self.train_data = f'jawiki_orig_{self.version}.txt'
+        else:
+            self.train_data = f'jawiki_{self.version}.txt'
         if os.path.exists(self.train_data):
             self.logger.info('train data has already created. skip wakati.')
             return
         # 中間ファイル用のTemporary directory
-        self.temp_dir = 'temp_' + self.extract_dir
+        if self.use_original:
+            self.temp_dir = 'temp_orig_' + self.extract_dir
+        else:
+            self.temp_dir = 'temp_' + self.extract_dir
         os.makedirs(self.temp_dir, exist_ok=True)
         # WikiExtractorが出力したファイルを、ディレクトリ毎にまとめる
         json_files = glob(f'{self.extract_dir}/*/*')
@@ -307,7 +356,13 @@ class Processor(object):
             # 逐次的に処理する
             for dn, fns in json_dir_files.items():
                 wn = os.path.join(self.temp_dir, f'{dn}.txt')
-                wakati_each_dir(tagger=self.tagger, wn=wn, fns=fns)
+                wakati_each_dir(
+                    tagger=self.tagger,
+                    wn=wn,
+                    fns=fns,
+                    use_original=self.use_original,
+                    offset_original=self.offset_original
+                )
         else:
             # Python 3.7 までだと何とかなってしまうので
             # multiprocessing.Processで簡易的な並列化
@@ -316,7 +371,13 @@ class Processor(object):
                 wn = os.path.join(self.temp_dir, f'{dn}.txt')
                 process = Process(
                     target=wakati_each_dir,
-                    kwargs={'tagger': self.tagger, 'wn': wn, 'fns': fns}
+                    kwargs={
+                        'tagger': self.tagger,
+                        'wn': wn,
+                        'fns': fns,
+                        'use_original': self.use_original,
+                        'offset_original': self.offset_original,
+                    }
                 )
                 process.start()
                 processes.append(process)
@@ -336,8 +397,12 @@ class Processor(object):
     def train(self: Processor) -> None:
         '''fastTextでWikipediaを学習する
         '''
-        self.fasttext_bin = f'fasttext_jawiki_{self.version}.bin'
-        self.fasttext_vec = f'fasttext_jawiki_{self.version}.vec'
+        if self.use_original:
+            self.fasttext_bin = f'fasttext_jawiki_orig_{self.version}.bin'
+            self.fasttext_vec = f'fasttext_jawiki_orig_{self.version}.vec'
+        else:
+            self.fasttext_bin = f'fasttext_jawiki_{self.version}.bin'
+            self.fasttext_vec = f'fasttext_jawiki_{self.version}.vec'
         if (
             os.path.exists(self.fasttext_bin)
         ) and (
@@ -373,7 +438,10 @@ class Processor(object):
         '''fastTextのバイナリはサイズが大きく使いづらいため、
         gensimのKeyedVecor形式バイナリに変換する
         '''
-        self.kv_bin = f'kv_fasttext_jawiki_{self.version}.bin'
+        if self.use_original:
+            self.kv_bin = f'kv_fasttext_jawiki_orig_{self.version}.bin'
+        else:
+            self.kv_bin = f'kv_fasttext_jawiki_{self.version}.bin'
         kv = KeyedVectors.load_word2vec_format(
             self.fasttext_vec, binary=False
         )
@@ -397,6 +465,10 @@ def main() -> None:
     parser.add_argument(
         '-d', '--dictionary', type=str, default='mecab_ipadic',
         help='path of MeCab dictonary or [ipa|juman|neologd]'
+    )
+    parser.add_argument(
+        '-o', '--original', action='store_true',
+        help='use original form'
     )
     parser.add_argument(
         '-m', '--model', type=str, choices=['skipgram', 'cbow'],

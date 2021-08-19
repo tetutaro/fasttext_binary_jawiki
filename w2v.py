@@ -6,28 +6,35 @@ import argparse
 from gensim.models.keyedvectors import KeyedVectors
 
 
-def load_kvs() -> KeyedVectors:
+def load_kvs(use_original: bool) -> KeyedVectors:
     # find the latest binary
     kv_bins = list()
     for entry in os.listdir(path='.'):
         name, ext = os.path.splitext(os.path.basename(entry))
-        if (
+        if ((
+            (use_original is True)
+            and
+            name.startswith('kv_fasttext_jawiki_orig_')
+        ) or (
+            (use_original is False)
+            and
             name.startswith('kv_fasttext_jawiki_')
-        ) and (
-            ext == '.bin'
-        ):
-            version = name.split('_')[3]
+            and
+            (not name.startswith('kv_fasttext_jawiki_orig_'))
+        )) and (ext == '.bin'):
+            version = name.split('_')[-1]
             kv_bins.append((entry, version))
     if len(kv_bins) == 0:
         raise SystemError('KeyedVectors binary not found')
     bin_fn = sorted(kv_bins, key=lambda x: x[1], reverse=True)[0][0]
+    print(bin_fn)
     return KeyedVectors.load_word2vec_format(bin_fn, binary=True)
 
 
 def find_similar(
-    pos: List[str], neg: Optional[List[str]], topn: int
+    pos: List[str], neg: Optional[List[str]], topn: int, original: bool
 ) -> None:
-    kvs = load_kvs()
+    kvs = load_kvs(use_original=original)
     positives = list()
     for p in pos:
         try:
@@ -75,6 +82,10 @@ def main() -> None:
     parser.add_argument(
         '--topn', type=int, default=5,
         help='number of top-N words to display (default: 5)'
+    )
+    parser.add_argument(
+        '-o', '--original', action='store_true',
+        help='use original form'
     )
     args = parser.parse_args()
     find_similar(**vars(args))
