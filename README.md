@@ -23,9 +23,9 @@
 ## 作り方
 
 ```
-usage: create_fasttext_binary.py [-h] [-d DICTIONARY] [-m {skipgram,cbow}]
-                                 [--dim DIM] [--epoch EPOCH]
-                                 [--mincount MINCOUNT]
+usage: create_fasttext_binary.py [-h] [-d DICTIONARY] [-o]
+                                 [-m {skipgram,cbow}] [--dim DIM]
+                                 [--epoch EPOCH] [--mincount MINCOUNT]
 
 tokenize sentence into morphemes using MeCab
 
@@ -33,6 +33,7 @@ optional arguments:
   -h, --help            show this help message and exit
   -d DICTIONARY, --dictionary DICTIONARY
                         path of MeCab dictonary or [ipa|juman|neologd]
+  -o, --original        use original form
   -m {skipgram,cbow}, --model {skipgram,cbow}
                         data representation model in fastText (default:
                         skipgram)
@@ -40,6 +41,8 @@ optional arguments:
   --epoch EPOCH         number of training epochs (default: 10)
   --mincount MINCOUNT   minimal number of word occurrences (default: 20)
 ```
+
+変化形を原形に変換して学習したい場合は `-o` オプションを付けてください。
 
 ## MeCab 辞書
 
@@ -75,7 +78,7 @@ optional arguments:
 ### 使い方
 
 ```
-usage: w2v.py [-h] pos [pos ...] [-n [NEG [NEG ...]]] [--topn TOPN]
+usage: w2v.py [-h] [-o] pos [pos ...] [-n [NEG [NEG ...]]] [--topn TOPN]
 
 find the word that have similar meanings
 
@@ -87,10 +90,13 @@ optional arguments:
   -n [NEG [NEG ...]], --neg [NEG [NEG ...]]
                         word[s] that contribute negatively
   --topn TOPN           number of top-N words to display (default: 5)
+  -o, --original        use original form
 ```
 
 pos や neg に学習済みでない単語を指定すると、それは除外します。
 また pos として学習済みの単語をひとつ以上指定しないとエラーになります。
+
+変化形を原形に変換して学習したものを使いたい場合は `-o` オプションを付けてください。
 
 ### 例
 
