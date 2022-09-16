@@ -129,8 +129,8 @@ dmypy.json
 .pyre/
 
 # resources and products
+poetry.lock
 mecab_ipadic
-WikiExtractor.py
 jawiki-*.xml.bz2
 jawiki_*
 fasttext_jawiki_*
