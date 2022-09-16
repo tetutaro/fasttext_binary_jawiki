@@ -22,7 +22,7 @@ import fasttext
 from gensim.models import KeyedVectors
 from logging import Logger, getLogger, Formatter, StreamHandler, INFO
 
-DEBUG: bool = True
+DEBUG: bool = False
 
 
 class Tokenizer:
@@ -106,7 +106,7 @@ class Tokenizer:
         self: Tokenizer,
         sentence: str,
         entities: List[Dict[str, int]],
-    ) -> List[str]:
+    ) -> List[Tuple[int, int, str]]:
         '''パースする
 
         Args:
@@ -114,14 +114,16 @@ class Tokenizer:
             entities (List[Dict[str, int]]): 分割しないエンティティの場所
 
         Returns:
-            List[str]: 文字のリスト
+            List[Tuple[int, int, str]]: start, end, word のリスト
         '''
-        words = list()
+        words_offs = list()
+        cur_pos = 0
         nodes = self.tagger.parse(sentence)
         for node in nodes.splitlines():
             node = node.strip()
             if node == 'EOS':
                 break
+            # このノードで出力する単語
             surface, feature_str = node.split('\t', 1)
             features = feature_str.split(',')
             if self.use_original:
@@ -131,8 +133,79 @@ class Tokenizer:
                     word = features[self.offset_original]
             else:
                 word = surface
-            words.append(word)
-        return words
+            # エンティティとの交差判定
+            area = (cur_pos, cur_pos + len(surface))
+            overlaped = list()
+            for entity in entities:
+                if area[0] < entity['end'] and entity['start'] < area[1]:
+                    overlaped.append(entity)
+            if len(overlaped) > 0:
+                # 交差するエンティティがあるので
+                # エンティティと重なっていないところを抜き出す
+                partial_words_offs = self._parse_gap(
+                    sentence=sentence,
+                    area=area,
+                    entities=overlaped
+                )
+                words_offs.extend(partial_words_offs)
+            else:
+                # 交差するエンティティ無し
+                words_offs.append((area[0], area[1], word))
+            cur_pos += len(surface)
+        # エンティティの文を投入し、ソート
+        for entity in entities:
+            words_offs.append((
+                entity['start'], entity['end'],
+                sentence[entity['start']: entity['end']]
+            ))
+        words_offs = sorted(words_offs, key=lambda x: x[0])
+        # 抜け漏れ無く分割できたかチェック
+        cur_pos = 0
+        for elem in words_offs:
+            assert(cur_pos == elem[0])
+            cur_pos = elem[1]
+        assert(cur_pos == len(sentence))
+        return words_offs
+
+    def _parse_gap(
+        self: Tokenizer,
+        sentence: str,
+        area: Tuple[int, int],
+        entities: List[Dict[str, int]],
+    ) -> List[Tuple[int, int, str]]:
+        '''重なり合っていない隙間をパースする
+
+        Args:
+            sentence (str): 文章
+            area (Tuple[int, int]): 重なりが検知された単語の位置
+            entities (List[Dict[str, int]]): 分割しないエンティティの場所
+
+        Returns:
+            List[Tuple[int, int, str]]: start, end, word のリスト
+        '''
+        # 交差するエンティティがあるので
+        # エンティティと重なっていないところを抜き出す
+        words_offs = list()
+        areas = [area]
+        for entity in entities:
+            new_areas = list()
+            for area in areas:
+                if area[0] < entity['start']:
+                    new_areas.append((area[0], entity['start']))
+                if entity['end'] < area[1]:
+                    new_areas.append((entity['end'], area[1]))
+                areas = new_areas
+        # 重なっていないところを再帰的に parse し、結果を入れる
+        for area in areas:
+            partial_words = self.parse(
+                sentence=sentence[area[0]: area[1]],
+                entities=[]
+            )
+            for pw in partial_words:
+                words_offs.append((
+                    area[0] + pw[0], area[1] + pw[1], pw[2]
+                ))
+        return words_offs
 
 
 class SentenceParser(HTMLParser):
@@ -600,10 +673,11 @@ class Processor:
             tag_positions=entity_ranges
         )
         for sentence, entities in zip(parsed_sentences, entity_ranges):
-            words = self.tokenizer.parse(
+            words_offs = self.tokenizer.parse(
                 sentence=sentence,
                 entities=entities
             )
+            words = [x[2] for x in words_offs]
             wf.write(' '.join(words) + '\n')
             wf.flush()
         return
@@ -731,9 +805,6 @@ class Processor:
                     new_positions = list()
                 sentences[i] = sentence
                 tag_positions[i] = positions
-        if DEBUG:
-            print(f'sentences:{sentences}')
-            print(f'tag_position:{tag_positions}')
         return sentences, tag_positions
 
     def train(self: Processor) -> None:
@@ -839,11 +910,10 @@ def main() -> None:
         processor.extract_dir = 'testdata'
     # create train data
     processor.wakati()
-    if not DEBUG:
-        # training
-        processor.train()
-        # convert
-        processor.convert()
+    # training
+    processor.train()
+    # convert
+    processor.convert()
     return
 
 
