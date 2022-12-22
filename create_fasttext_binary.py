@@ -1,355 +1,41 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional, TextIO
+from typing import Dict, List, TextIO
 import sys
 import os
 import subprocess
 import json
 import re
+from copy import deepcopy
 import shutil
 import argparse
 import requests
 from glob import glob
 from bs4 import BeautifulSoup
-from html.parser import HTMLParser
 from html import unescape as unescape
-from urllib.parse import unquote
 from tqdm import tqdm
 from neologdn import normalize as neonorm
-from MeCab import Tagger
 import fasttext
 from gensim.models import KeyedVectors
 from logging import Logger, getLogger, Formatter, StreamHandler, INFO
+from src.title_extractor import TitleExtractor
+from src.title_parser import TitleParser
+from src.title_replacer import TitleReplacer
+from src.tokenizer import Tokenizer
 
-DEBUG: bool = False
-
-
-class Tokenizer:
-    '''形態素解析するクラス
-
-    Args:
-        dictionary (str):
-            MeCab 辞書のディレクトリ名
-            もしくは "ipa", "juman", "neologd" のどれか
-        use_original (bool):
-            原型に戻すか否か
-    '''
-    INSTALLED_DICTIONARIES: List[str] = ['ipa', 'juman', 'neologd']
-
-    def __init__(
-        self: Tokenizer,
-        dictionary: str,
-        use_original: bool
-    ) -> None:
-        super().__init__()
-        self.dictionary = dictionary
-        self.use_original = use_original
-        self._load_mecab()
-        return
-
-    def _load_mecab(self: Tokenizer) -> None:
-        '''MeCab をロードする
-        '''
-        if os.path.isdir(self.dictionary):
-            # load local dictionary
-            self.tagger = Tagger(f'-d {self.dictionary}')
-            # original dictionary is based on IPA
-            self.offset_original = 6
-            return
-        elif self.dictionary not in self.INSTALLED_DICTIONARIES:
-            raise ValueError(f'dictionary not found: {self.dictionary}')
-        # load installed dictionary
-        mecab_config_path = None
-        # retrive the directory of dictionary
-        mecab_config_cands = [
-            '/usr/bin/mecab-config', '/usr/local/bin/mecab-config'
-        ]
-        for c in mecab_config_cands:
-            if os.path.exists(c):
-                mecab_config_path = c
-                break
-        if mecab_config_path is None:
-            raise SystemError(
-                'mecab-config not found. check mecab is really installed'
-            )
-        dic_dir = subprocess.run(
-            [mecab_config_path, '--dicdir'],
-            check=True, stdout=subprocess.PIPE, text=True
-        ).stdout.rstrip()
-        # retrive the dictonary
-        dic_path = None
-        if self.dictionary == 'ipa':
-            dic_cands = ['ipadic-utf8', 'ipadic']
-        elif self.dictionary == 'juman':
-            dic_cands = ['juman-utf8', 'jumandic']
-        else:  # self.dictionary == 'neologd'
-            dic_cands = ['mecab-ipadic-neologd']
-        for c in dic_cands:
-            tmpdir = os.path.join(dic_dir, c)
-            if os.path.isdir(tmpdir):
-                dic_path = tmpdir
-                break
-        if dic_path is None:
-            raise SystemError(
-                f'installed dictionary not found: {self.dictionary}'
-            )
-        # create tagger
-        self.tagger = Tagger(f'-d {dic_path}')
-        if self.dictionary == 'juman':
-            self.offset_original = 4
-        else:
-            self.offset_original = 6
-        return
-
-    def parse(
-        self: Tokenizer,
-        sentence: str,
-        entities: List[Dict[str, int]],
-    ) -> List[Tuple[int, int, str]]:
-        '''パースする
-
-        Args:
-            sentence (str): 文章
-            entities (List[Dict[str, int]]): 分割しないエンティティの場所
-
-        Returns:
-            List[Tuple[int, int, str]]: start, end, word のリスト
-        '''
-        words_offs = list()
-        cur_pos = 0
-        nodes = self.tagger.parse(sentence)
-        for node in nodes.splitlines():
-            node = node.strip()
-            if node == 'EOS':
-                break
-            # このノードで出力する単語
-            surface, feature_str = node.split('\t', 1)
-            features = feature_str.split(',')
-            if self.use_original:
-                if len(features) <= self.offset_original:
-                    word = surface
-                else:
-                    word = features[self.offset_original]
-            else:
-                word = surface
-            # エンティティとの交差判定
-            area = (cur_pos, cur_pos + len(surface))
-            overlaped = list()
-            for entity in entities:
-                if area[0] < entity['end'] and entity['start'] < area[1]:
-                    overlaped.append(entity)
-            if len(overlaped) > 0:
-                # 交差するエンティティがあるので
-                # エンティティと重なっていないところを抜き出す
-                partial_words_offs = self._parse_gap(
-                    sentence=sentence,
-                    area=area,
-                    entities=overlaped
-                )
-                words_offs.extend(partial_words_offs)
-            else:
-                # 交差するエンティティ無し
-                words_offs.append((area[0], area[1], word))
-            cur_pos += len(surface)
-        # エンティティの文を投入し、ソート
-        for entity in entities:
-            words_offs.append((
-                entity['start'], entity['end'],
-                sentence[entity['start']: entity['end']]
-            ))
-        words_offs = sorted(words_offs, key=lambda x: x[0])
-        # 抜け漏れ無く分割できたかチェック
-        cur_pos = 0
-        for elem in words_offs:
-            assert(cur_pos == elem[0])
-            cur_pos = elem[1]
-        assert(cur_pos == len(sentence))
-        return words_offs
-
-    def _parse_gap(
-        self: Tokenizer,
-        sentence: str,
-        area: Tuple[int, int],
-        entities: List[Dict[str, int]],
-    ) -> List[Tuple[int, int, str]]:
-        '''重なり合っていない隙間をパースする
-
-        Args:
-            sentence (str): 文章
-            area (Tuple[int, int]): 重なりが検知された単語の位置
-            entities (List[Dict[str, int]]): 分割しないエンティティの場所
-
-        Returns:
-            List[Tuple[int, int, str]]: start, end, word のリスト
-        '''
-        # 交差するエンティティがあるので
-        # エンティティと重なっていないところを抜き出す
-        words_offs = list()
-        areas = [area]
-        for entity in entities:
-            new_areas = list()
-            for area in areas:
-                if area[0] < entity['start']:
-                    new_areas.append((area[0], entity['start']))
-                if entity['end'] < area[1]:
-                    new_areas.append((entity['end'], area[1]))
-                areas = new_areas
-        # 重なっていないところを再帰的に parse し、結果を入れる
-        for area in areas:
-            partial_words = self.parse(
-                sentence=sentence[area[0]: area[1]],
-                entities=[]
-            )
-            for pw in partial_words:
-                words_offs.append((
-                    area[0] + pw[0], area[1] + pw[1], pw[2]
-                ))
-        return words_offs
-
-
-class SentenceParser(HTMLParser):
-    '''文章毎にHREFタグの置き換えをして、置き換えたタグを記憶する
-
-    Args:
-        dictionary (Dict[str, str]):
-            日本語 Wikipedia に収録されているタイトルと
-            その表記名の辞書（例："スズキ (会社)" -> "スズキ"）
-    '''
-
-    def __init__(
-        self: SentenceParser,
-        dictionary: Dict[str, str]
-    ) -> None:
-        super().__init__()
-        # 辞書の登録
-        self.titles = sorted(list(dictionary.keys()))
-        self.dictionary = dictionary
-        # 初期化
-        self._clean_tag_resources()
-        self._clean_ref_resources()
-        return
-
-    def _clean_tag_resources(self: SentenceParser) -> None:
-        '''タグ情報を初期化
-        '''
-        self.text = ''
-        self.tags = dict()
-        self.tag_ranges = list()
-        self.pos = 0
-        return
-
-    def _clean_ref_resources(self: SentenceParser) -> None:
-        '''タグ置き換えのための資源をリセットする
-        '''
-        self.isin = False
-        self.rref = None
-        self.surface = None
-        return
-
-    def reset(self: SentenceParser) -> None:
-        '''HTMLParser の reset() を継承
-        '''
-        super().reset()
-        # 初期化
-        self._clean_tag_resources()
-        self._clean_ref_resources()
-        return
-
-    def handle_starttag(
-        self: SentenceParser,
-        tag: str,
-        attrs: List[Tuple[str, str]]
-    ) -> None:
-        '''HTMLParser の handle_starttag() を継承
-        A タグなら、HREF を unquote して保存し、フラグを立てる
-
-        Args:
-            tag (str): タグの名前
-            atts (List[Tuple[str, str]]): タグの属性
-        '''
-        if tag != 'a':
-            # A タグじゃない
-            # タグ置き換えのための資源をリセットする
-            self._clean_ref_resources()
-            return
-        # リンク先を取得
-        href = None
-        for key, value in attrs:
-            if key == 'href':
-                href = value
-        if href is None:
-            # HREF が取れない
-            # タグ置き換えのための資源をリセットする
-            self._clean_ref_resources()
-            return
-        # URL quotation を元に戻す
-        href = unquote(href)
-        # 対応する表記名を取得
-        rref = self.dictionary.get(href)
-        if rref is None:
-            # HREF が 日本語 Wikipedia にない
-            # タグ置き換えのための資源をリセットする
-            self._clean_ref_resources()
-        else:
-            # フラグを立て、リンク先を保持
-            self.isin = True
-            self.rref = rref
-            self.surface = None
-        return
-
-    def handle_endtag(
-        self: SentenceParser,
-        tag: str
-    ) -> None:
-        '''HTMLParser の handle_endtag() を継承
-        A タグなら文字をリンク先に置き換える
-
-        Args:
-            tag (str): タグの名前
-        '''
-        if tag != 'a':
-            # タグ置き換えのための資源をリセットする
-            self._clean_tag_resources()
-            return
-        # 置き換え
-        if self.isin and self.surface is not None:
-            self.tags[self.surface] = self.rref
-            self.tag_ranges.append({
-                'start': self.pos,
-                'end': self.pos + len(self.rref)
-            })
-            self.pos += len(self.rref)
-            self.text += self.rref
-        # タグ置き換えのための資源をリセットする
-        self._clean_ref_resources()
-        return
-
-    def handle_data(self: SentenceParser, data: str) -> None:
-        '''HTMLParser の handle_data() を継承
-        A タグの中の文字であれば、それを表層として登録
-        それ以外であれば普通に text に追加
-
-        Args:
-            data (str): 出てきた文字
-        '''
-        if self.isin:
-            # 表層として登録
-            self.surface = data
-        else:
-            # text に追加
-            self.pos += len(data)
-            self.text += data
-        return
+USE_TITLE_REPLACER: bool = False
 
 
 class Processor:
     MIN_TEXT_LEN: int = 100  # 内容の最小文字数
     MIN_LINE_LEN: int = 10  # １行の最小文字数
     MIN_TEXT_NLINES: int = 3  # 内容の最小行数
+    MIN_SENTENCE_NWORDS: int = 5  # １行の最小単語数
 
     def __init__(
         self: Processor,
+        version: str,
         dictionary: str,
         original: bool,
         model: str,
@@ -358,8 +44,10 @@ class Processor:
         mincount: int,
         logger: Logger
     ) -> None:
-        self.wiki_dictionary = dict()
-        self.texts = list()
+        if version == 'none':
+            self.version = None
+        else:
+            self.version = version
         self.mecab_dictionary = dictionary
         self.use_original = original
         self.model = model
@@ -367,6 +55,7 @@ class Processor:
         self.epoch = epoch
         self.mincount = mincount
         self.logger = logger
+        self.title_dictionary = dict()
         self._scrape_wikimedia()
         return
 
@@ -385,6 +74,8 @@ class Processor:
         # get latest and valid version
         found = False
         for version in sorted(versions, reverse=True):
+            if self.version is not None and self.version != version:
+                continue
             found = self._scrape_wikimedia_page(version=version)
             if found is True:
                 break
@@ -460,7 +151,53 @@ class Processor:
             raise e
         return
 
+    def _extract_titles(self: Processor) -> None:
+        # タイトルを書き出すファイル名
+        self.title_fname = f'jawiki_titles_{self.version}.txt'
+        if os.path.exists(self.title_fname):
+            # ファイルからタイトルを読み込む
+            with open(self.title_fname, 'rt') as rf:
+                line = rf.readline()
+                while line:
+                    key, value = line.strip().split(',', 1)
+                    self.title_dictionary[key] = value
+                    line = rf.readline()
+        else:
+            # まずはタイトルだけを全部抽出してファイルに書き出し
+            extractor = TitleExtractor(
+                min_text_len=self.MIN_TEXT_LEN,
+                min_line_len=self.MIN_LINE_LEN,
+                min_text_nlines=self.MIN_TEXT_NLINES
+            )
+            self.logger.info('collect titles')
+            for fname in tqdm(self.extracted_files):
+                self._collect_titles_each_file(fname=fname)
+                # １行ずつ読み込む
+                with open(fname, 'rt') as rf:
+                    line = rf.readline()
+                    while line:
+                        # JSON の読み込み
+                        try:
+                            info = json.loads(line.strip())
+                        except Exception:
+                            line = rf.readline()
+                            continue
+                        title, normed_title = extractor.extract(info=info)
+                        if len(title) > 0:
+                            # タイトルの辞書への登録
+                            self.title_dictionary[title] = normed_title
+                            line = rf.readline()
+            with open(self.title_fname, 'wt') as wf:
+                for key, value in self.title_dictionary.items():
+                    wf.write(f'{key},{value}\n')
+                wf.flush()
+        return
+
     def wakati(self: Processor) -> None:
+        # WikiExtractor で抽出したファイル群
+        self.extracted_files = sorted(glob(f'{self.extract_dir}/*/*'))
+        # Wikipedia のタイトルだけを全部読み込む
+        self._extract_titles()
         # 学習用データを書き出すファイル
         if self.use_original:
             self.train_fname = f'jawiki_orig_{self.version}.txt'
@@ -477,14 +214,14 @@ class Processor:
         else:
             self.temp_dir = 'temp_' + self.extract_dir
         os.makedirs(self.temp_dir, exist_ok=True)
-        # WikiExtractor で抽出したファイル群
-        self.extracted_files = sorted(glob(f'{self.extract_dir}/*/*'))
-        # まずはタイトルだけを全部抽出
-        self._collect_titles()
         # インスタンス生成
-        self.parser = SentenceParser(
-            dictionary=self.wiki_dictionary
+        self.title_parser = TitleParser(
+            title_dictionary=self.title_dictionary
         )
+        if USE_TITLE_REPLACER:
+            self.title_replacer = TitleReplacer(
+                title_dictionary=self.title_dictionary
+            )
         self.tokenizer = Tokenizer(
             dictionary=self.mecab_dictionary,
             use_original=self.use_original
@@ -501,96 +238,6 @@ class Processor:
             raise e
         shutil.rmtree(self.temp_dir)
         return
-
-    def _collect_titles(self: Processor) -> None:
-        '''WikiExtractor で抽出したファイル群を読み込み、
-        タイトルの辞書を作る（ここでは for 文だけ）
-        '''
-        self.logger.info('collect titles')
-        for fname in tqdm(self.extracted_files):
-            self._collect_titles_each_file(fname=fname)
-        return
-
-    def _collect_titles_each_file(self: Processor, fname: str) -> None:
-        '''ファイルを１行ずつ読み込み、タイトルを抽出する
-
-        Args:
-            fname (str): ファイルのパス
-        '''
-        # １行ずつ読み込む
-        with open(fname, 'rt') as rf:
-            line = rf.readline()
-            while line:
-                # JSON の読み込み
-                try:
-                    info = json.loads(line.strip())
-                except Exception:
-                    line = rf.readline()
-                    continue
-                title = self._collect_titles_each_entity(info=info)
-                if title is None:
-                    line = rf.readline()
-                    continue
-                # タイトルの正規化
-                normed_title = neonorm(title)
-                # 括弧は（中身も含めて）すべて削除
-                normed_title = re.sub(
-                    r'\(.*\)', '', normed_title
-                ).strip()
-                # タイトルの辞書への登録
-                self.wiki_dictionary[title] = normed_title
-                line = rf.readline()
-        return
-
-    def _collect_titles_each_entity(
-        self: Processor,
-        info: Dict[str, str]
-    ) -> Optional[str]:
-        '''ひとつのエンティティ（Wikipediaの一項目）から
-        タイトルを抽出する（不適切なものは意図的に読み込まない）
-
-        Args:
-            info (Dict[str, str]): エンティティの情報
-
-        Returns:
-            Optional[str]: タイトル（不適切な場合は None）
-        '''
-        # 本文の取得
-        sentences = info.get('text')
-        if (sentences is None) or (len(sentences) < self.MIN_TEXT_LEN):
-            # 本文が無かったり短すぎたら無視する
-            return None
-        # タイトルの取得
-        title = info.get('title')
-        if title is None:
-            # タイトルが無かったら無視する
-            return None
-        # 本文から余分な文章を削除する
-        valid_sentences = list()
-        for sentence in sentences.splitlines():
-            sentence = neonorm(sentence.strip())
-            if sentence == '関連項目.':
-                # 関連項目以降はスキップ
-                break
-            if sentence.endswith('.'):
-                # 見出しの文はスキップ
-                continue
-            if '「」' in sentence:
-                # 発音記号などが書かれていて、
-                # 壊れている文はスキップ
-                continue
-            # 括弧は（中身も含めて）すべて削除
-            sentence = re.sub(
-                r'（.*）', '', sentence
-            ).strip()
-            if len(sentence) < self.MIN_LINE_LEN:
-                # あまりに短い文はスキップ
-                continue
-            valid_sentences.append(sentence)
-        if len(valid_sentences) < self.MIN_TEXT_NLINES:
-            # 本文が実質無かったら、スキップ
-            return None
-        return title
 
     def _tokenize_sentences(self: Processor) -> None:
         '''WikiExtractor で抽出したファイル群を読み込み、
@@ -643,9 +290,6 @@ class Processor:
             info (Dict[str, str]): エンティティの情報
             wf (TextIO): 中間ファイルのファイル識別子
         '''
-        # エンティティ全体のタグ
-        entity_tags = dict()
-        entity_ranges = list()
         # 本文の取得
         sentences = info.get('text')
         if (sentences is None) or (len(sentences) < self.MIN_TEXT_LEN):
@@ -658,28 +302,32 @@ class Processor:
         if len(valid_sentences) < self.MIN_TEXT_NLINES:
             # 本文が実質無かったら、スキップ
             return
-        # HTMLタグをパースする
-        parsed_sentences = list()
+        # 一文ずつ処理する
         for sentence in valid_sentences:
-            self.parser.reset()
-            self.parser.feed(sentence)
-            parsed_sentences.append(self.parser.text)
-            entity_tags |= self.parser.tags
-            entity_ranges.append(self.parser.tag_ranges)
-        # タグを全文検索し、HTMLタグと被っていなかったら置換
-        parsed_sentences, entity_ranges = self._find_and_replace_tags(
-            sentences=parsed_sentences,
-            tag_dictionary=entity_tags,
-            tag_positions=entity_ranges
-        )
-        for sentence, entities in zip(parsed_sentences, entity_ranges):
-            words_offs = self.tokenizer.parse(
+            # Wikipedia にリンクを貼る HTML Anchor タグを
+            # 正規化したタイトルに置き換え、それをタグとして保持
+            tags = list()
+            self.title_parser.reset()
+            self.title_parser.feed(sentence)
+            sentence = deepcopy(self.title_parser.text)
+            for tag in self.title_parser.tags:
+                tags.append((tag['start'], tag['end']))
+            if USE_TITLE_REPLACER:
+                # タイトル名でを全文検索し、
+                # HTMLタグと被っていなかったら置換
+                sentence, tags = self.title_replacer.replace(
+                    sentence=sentence,
+                    tags=tags
+                )
+            # 形態素解析し、単語のリストにする
+            words = self.tokenizer.parse(
                 sentence=sentence,
-                entities=entities
+                tags=tags
             )
-            words = [x[2] for x in words_offs]
-            wf.write(' '.join(words) + '\n')
-            wf.flush()
+            # 空白区切りの分かち書きをファイルに書き込む
+            if len(words) > self.MIN_SENTENCE_NWORDS:
+                wf.write(' '.join(words) + '\n')
+                wf.flush()
         return
 
     def _eliminate_bad_sentence(
@@ -696,7 +344,7 @@ class Processor:
         '''
         valid_sentences = list()
         for sentence in sentences.splitlines():
-            sentence = sentence.strip()
+            sentence = neonorm(sentence.strip())
             if sentence == '関連項目.':
                 # 関連項目以降はスキップ
                 break
@@ -718,95 +366,6 @@ class Processor:
             valid_sentences.append(unescape(sentence))
         return valid_sentences
 
-    def _find_and_replace_tags(
-        self: Processor,
-        sentences: List[str],
-        tag_dictionary: Dict[str, str],
-        tag_positions: List[List[Dict[str, int]]]
-    ) -> Tuple[List[str], List[List[Dict[str, int]]]]:
-        '''タグを全文検索し、HTMLタグと被っていなかったら置換
-
-        Args:
-            sentences (List[str]): 文章の配列
-            tag_dictionary(Dict[str: int]): タグとその更新後の辞書
-            tag_positions(List[List[Dict[str, int]]]): タグの場所
-
-        Returns:
-            List[str]: 更新した文章の配列
-            List[List[Dict[str, int]]]: 更新したタグの場所
-        '''
-        assert(len(sentences) == len(tag_positions))
-        # タグを 1. 文字数が多い順 2. 辞書順に並び替える
-        tag_list = sorted(list(tag_dictionary.keys()))
-        tag_list = sorted(
-            tag_list, key=lambda x: len(x), reverse=True
-        )
-        for tag in tag_list:
-            if len(tag) < 2:
-                break
-            new_tag = tag_dictionary[tag]
-            old_length = len(tag)
-            new_length = len(new_tag)
-            for i, sentence in enumerate(sentences):
-                spans = [
-                    m.span() for m in re.finditer(tag, sentence)
-                ]
-                if len(spans) == 0:
-                    continue
-                cur_pos = 0
-                inc_off = 0
-                text = ''
-                positions = tag_positions[i].copy()
-                new_positions = list()
-                for span in spans:
-                    if cur_pos < span[0]:
-                        text += sentence[cur_pos: span[0]]
-                        cur_pos = span[0]
-                    is_valid = True
-                    for position in positions:
-                        if is_valid and span[1] <= position['start']:
-                            # spanがrangeと被ってない→span追加
-                            new_positions.append({
-                                'start': cur_pos + inc_off,
-                                'end': cur_pos + inc_off + new_length,
-                            })
-                            text += new_tag
-                            cur_pos += len(old_length)
-                            inc_off += new_length - old_length
-                            is_valid = False
-                        elif position['end'] <= span[0]:
-                            # rangeがspanの位置まで来てない→pass
-                            pass
-                        else:
-                            # rangeがspanと重なる→span無効
-                            is_valid = False
-                        new_positions.append({
-                            'start': position['start'] + inc_off,
-                            'end': position['end'] + inc_off,
-                        })
-                    if is_valid:
-                        if cur_pos < span[0]:
-                            text += sentence[cur_pos: span[0]]
-                            cur_pos = span[0]
-                        new_positions.append({
-                            'start': cur_pos + inc_off,
-                            'end': cur_pos + inc_off + new_length,
-                        })
-                        text += new_tag
-                        cur_pos += old_length
-                        inc_off += new_length - old_length
-                    if cur_pos < len(sentence):
-                        text += sentence[cur_pos: len(sentence)]
-                    cur_pos = 0
-                    inc_off = 0
-                    sentence = text
-                    text = ''
-                    positions = new_positions
-                    new_positions = list()
-                sentences[i] = sentence
-                tag_positions[i] = positions
-        return sentences, tag_positions
-
     def train(self: Processor) -> None:
         '''fastTextでWikipediaを学習する
         '''
@@ -825,7 +384,7 @@ class Processor:
             return
         # 学習
         ft = fasttext.train_unsupervised(
-            self.train_data, model=self.model,
+            self.train_fname, model=self.model,
             dim=self.dim, epoch=self.epoch, minCount=self.mincount
         )
         # モデルのバイナリの書き出し
@@ -876,6 +435,10 @@ def main() -> None:
         description='tokenize sentence into morphemes using MeCab'
     )
     parser.add_argument(
+        '-v', '--version', type=str, default='none',
+        help='indicate version of Wikipedia'
+    )
+    parser.add_argument(
         '-d', '--dictionary', type=str, default='mecab_ipadic',
         help='path of MeCab dictonary or [ipa|juman|neologd]'
     )
@@ -906,8 +469,6 @@ def main() -> None:
     processor.download()
     # extract
     processor.extract()
-    if DEBUG:
-        processor.extract_dir = 'testdata'
     # create train data
     processor.wakati()
     # training

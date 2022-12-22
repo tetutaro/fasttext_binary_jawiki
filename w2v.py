@@ -6,24 +6,29 @@ import argparse
 from gensim.models.keyedvectors import KeyedVectors
 
 
-def load_kvs(use_original: bool) -> KeyedVectors:
+def load_kvs(version: Optional[str], use_original: bool) -> KeyedVectors:
     # find the latest binary
     kv_bins = list()
-    for entry in os.listdir(path='.'):
-        name, ext = os.path.splitext(os.path.basename(entry))
-        if ((
-            (use_original is True)
-            and
-            name.startswith('kv_fasttext_jawiki_orig_')
-        ) or (
-            (use_original is False)
-            and
-            name.startswith('kv_fasttext_jawiki_')
-            and
-            (not name.startswith('kv_fasttext_jawiki_orig_'))
-        )) and (ext == '.bin'):
-            version = name.split('_')[-1]
+    if version is not None:
+        if use_original:
+            entry = f'kv_fasttext_jawiki_orig_{version}.bin'
+        else:
+            entry = f'kv_fasttext_jawiki_{version}.bin'
+        if os.path.exists(entry):
             kv_bins.append((entry, version))
+    else:
+        for entry in os.listdir(path='.'):
+            name, ext = os.path.splitext(os.path.basename(entry))
+            if use_original:
+                if name.startswith('kv_fasttext_jawiki_orig_'):
+                    version = name.split('_')[-1]
+                    kv_bins.append((entry, version))
+            else:
+                if ((
+                    not name.startswith('kv_fasttext_jawiki_orig_')
+                ) and name.startswith('kv_fasttext_jawiki_')):
+                    version = name.split('_')[-1]
+                    kv_bins.append((entry, version))
     if len(kv_bins) == 0:
         raise SystemError('KeyedVectors binary not found')
     bin_fn = sorted(kv_bins, key=lambda x: x[1], reverse=True)[0][0]
@@ -32,9 +37,15 @@ def load_kvs(use_original: bool) -> KeyedVectors:
 
 
 def find_similar(
-    pos: List[str], neg: Optional[List[str]], topn: int, original: bool
+    pos: List[str],
+    neg: Optional[List[str]],
+    version: str,
+    topn: int,
+    original: bool
 ) -> None:
-    kvs = load_kvs(use_original=original)
+    if version == 'none':
+        version = None
+    kvs = load_kvs(version=version, use_original=original)
     positives = list()
     for p in pos:
         try:
@@ -78,6 +89,10 @@ def main() -> None:
     parser.add_argument(
         '-n', '--neg', nargs='*',
         help='word[s] that contribute negatively'
+    )
+    parser.add_argument(
+        '-v', '--version', default='none',
+        help='version of trained binary'
     )
     parser.add_argument(
         '--topn', type=int, default=5,
