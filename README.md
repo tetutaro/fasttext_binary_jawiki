@@ -72,7 +72,7 @@ optional arguments:
 
 ## MeCab 辞書
 
-お薦めは(私のrepository)[https://github.com/tetutaro/mecab_dictionary]を使うことです。
+お薦めは[私のrepository](https://github.com/tetutaro/mecab_dictionary)を使うことです。
 上記の repository を clone し、説明に従って辞書を作り、
 そうして出来た `mecab_ipadic` ディレクトリを、ここにシンボリックリンクを張るなり移動するなりコピーするなりしてください。
 この場合、`-d` オプションを指定しなくても認識します。
