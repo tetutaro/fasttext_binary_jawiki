@@ -33,7 +33,7 @@ class TokenizeGnome:
         import unidic_cwj
 
         self.dic_dir = unidic_cwj.dicdir
-        self.dic_rc = os.path.join(self.dic_dir, "dicrc")
+        self.dic_rc = os.path.join(os.getcwd(), "dicrc")
         self.dic_version = unidic_cwj.__version__
         arg: str = f"-d {self.dic_dir} -r {self.dic_rc}"
         self.tagger = GenericTagger(arg)
@@ -89,13 +89,16 @@ class TokenizeGnome:
                 node = node.strip()
                 if node == "EOS":
                     break
-                if '"""' in node:
-                    node = node.replace('"""', '"\\""')
-                features: Dict[str, str] = json.loads(node)
-                if base and features["orthBase"] != "":
-                    words.append(features["orthBase"])
+                try:
+                    surface, baseform = node.split("\t", 1)
+                except Exception:
+                    self.logger.debug(f"node={node}")
+                    surface = node
+                    baseform = ""
+                if base and baseform not in ["", "UNK"]:
+                    words.append(baseform)
                 else:
-                    words.append(features["surface"])
+                    words.append(surface)
             if len(words) >= self.MIN_SENTENCE_NWORDS:
                 wf.write(" ".join(words) + "\n")
                 wf.flush()

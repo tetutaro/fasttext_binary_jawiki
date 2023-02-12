@@ -130,8 +130,10 @@ dmypy.json
 
 # resources and products
 poetry.lock
-mecab_ipadic
 jawiki-*.xml.bz2
-jawiki_*
+jawiki_*/
+jawiki_*.txt
+temp_jawiki_*/
 fasttext_jawiki_*
 kv_fasttext_jawiki_*
+unidic_cwj-*-py3-none-any.whl
