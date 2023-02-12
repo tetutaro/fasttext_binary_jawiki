@@ -4,30 +4,8 @@
 
 ## 特徴
 
-* Wikimedia をクローリングし、最新の日本語 Wikipedia のダンプを自動で取ってくる
+* Wikimedia の CirrusSearch ダンプページをクローリングし、最新の日本語 Wikipedia のダンプを自動で取ってくる
 * 軽量で使いやすい gensim.models.KeyedVector のバイナリに変換
-* [東北大学 鈴木正敏さんのサイト](http://www.cl.ecei.tohoku.ac.jp/~m-suzuki/jawiki_vector/) にあるように、日本語 Wikipedia 内へのハイパーリンクが付いている言葉は固有名詞（エンティティ）と見做し、リンク先ページのタイトルに置き換え、その言葉はひとつの形態素（単語）となるよう分割する
-    * 日本語 Wikipedia 以外へのリンクは、文章そのままにする
-    * 日本語 Wikipedia 内へのリンクでも、該当するページが無ければ、文章そのままにする
-    * 上記サイトでは、固有名詞（エンティティ）には大括弧（`[`, `]`）を両端に付けて、一般的に文章に現れる単語と明示的に区別をしている
-    * しかし、両端に大括弧を付けると、一般的な用途において非常に使いにくい
-        * 明示的にエンティティと判断できた `[沖縄県]` という単語と、エンティティと判断できずに一般的な単語と判断した `沖縄県` という単語の両方が存在する可能性があり、どちらなら学習できているのか、どちらを使うべきなのかが不明
-    * よって本実装では、エンティティであっても大括弧は付けない
-        * `沖縄県` という言葉をそのまま使って分析することが出来、大括弧を付けるべきかどうかを迷うことは無い
-    * また日本語 Wikipedia では、曖昧さの回避のために、タイトルに括弧で説明を付ける場合がある
-        * 例：`スズキ (企業)` と `スズキ (魚)`
-    * 上記サイトでは、エンティティである単語を、これら追加説明の括弧を付けたものに置き換えている
-        * `スズキ (企業)` と `スズキ (魚)` を明確に区別することが出来るという利点がある
-    * しかし、この括弧による説明の付加は、一般的な用途において非常に使いにくい
-        * 文章中に現れる全ての `スズキ` を、企業なのか魚なのか（人力で）判定して付加しないと、単語分散表現（ベクトル化）が出来ない
-        * そもそも、このエンティティは括弧の説明をつけるべきなのか、括弧の説明としてどのような候補があるのかを完全に把握するのは実際には不可能に近い
-    * よって本実装では、括弧の説明はすべて省略する
-        * `スズキ (企業)` と `スズキ (魚)` を区別できないが、一般的な用途に支障をきたすことがない
-    * さらに日本語 Wikipedia では、あるページでハイパーリンクを貼った言葉が再び現れても、必ずしもその単語にもハイパーリンクを貼るとは限らない（ハイパーリンクを省略しても良い）となっている
-    * 上記サイトでは、ページ内のエンティティを一旦すべて抽出し、それらを最長一致でページ内を全文探索し、見つかったものはタイトルに置換するということを行っている
-    * 本実装でも、とりあえず実装はしたが、実行していない
-        * ものすごく時間がかかってしまうから
-        * MeCab 辞書として IPA NEologd 辞書もしくは IPA NEologd を取り込んだ IPA 辞書を使えば、Wikipedia のタイトルにある言葉は形態素として分解するはずだから
 
 ## 前提
 
@@ -45,7 +23,7 @@
 ## 作り方
 
 ```
-usage: create_fasttext_binary.py [-h] [-v VERSION] [-d DICTIONARY] [-o]
+usage: create_fasttext_binary.py [-h] [-v VERSION] [-d DICTIONARY] [-b]
                                  [-m {skipgram,cbow}] [--dim DIM]
                                  [--epoch EPOCH] [--mincount MINCOUNT]
 
@@ -57,11 +35,11 @@ optional arguments:
                         indicate version of Wikipedia
   -d DICTIONARY, --dictionary DICTIONARY
                         path of MeCab dictonary or [ipa|juman|neologd]
-  -o, --original        use original form
+  -b, --base            use base form
   -m {skipgram,cbow}, --model {skipgram,cbow}
                         data representation model in fastText (default:
                         skipgram)
-  --dim DIM             size of word vectors (default: 300)
+  --dim DIM             size of word vectors (default: 200)
   --epoch EPOCH         number of training epochs (default: 10)
   --mincount MINCOUNT   minimal number of word occurrences (default: 20)
 ```

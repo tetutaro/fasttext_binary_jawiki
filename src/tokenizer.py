@@ -1,243 +1,167 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List, NamedTuple, Optional
 import os
+from glob import glob
 import subprocess
-from MeCab import Tagger
+from multiprocessing import (
+    Process,
+    Queue,
+    JoinableQueue,
+    SimpleQueue,
+    get_logger,
+)
+from logging import Logger, Formatter
+from logging.handlers import QueueHandler, QueueListener
+
+from tqdm import tqdm
+
+from src.tokenize_gnome import TokenizeGnome
+from src.utils import get_nprocess
+
+
+class TaskRequest(NamedTuple):
+    fname: str
+    oname: str
+    base: bool
+
+
+class TaskResponse(NamedTuple):
+    oname: str
+
+
+def gnome_worker(
+    index: int,
+    req_queue: JoinableQueue,
+    res_queue: SimpleQueue,
+    log_queue: Queue,
+    log_level: int,
+) -> None:
+    logger: Logger = get_logger()
+    logger.setLevel(log_level)
+    formatter: Formatter = Formatter(f"[GNOME{index:02}] %(message)s")
+    handler: QueueHandler = QueueHandler(log_queue)
+    handler.setLevel(log_level)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    gnome: TokenizeGnome = TokenizeGnome(logger=logger)
+    # Main loop
+    while True:
+        req: Optional[TaskRequest] = req_queue.get(block=True)
+        if req is None:
+            req_queue.put(None)
+            break
+        gnome.tokenize(fname=req.fname, oname=req.oname, base=req.base)
+        res = TaskResponse(oname=req.oname)
+        res_queue.put(res)
+        req_queue.task_done()
+    return
 
 
 class Tokenizer:
-    '''形態素解析するクラス
-
-    Args:
-        dictionary (str):
-            MeCab 辞書のディレクトリ名
-            もしくは "ipa", "juman", "neologd" のどれか
-        use_original (bool):
-            原型に戻すか否か
-    '''
-    INSTALLED_DICTIONARIES: List[str] = ['ipa', 'juman', 'neologd']
+    version: str
+    extract_dir: str
+    base: bool
+    train_fname: str
+    temp_dir: str
+    nprocess: int
+    logger: Logger
 
     def __init__(
         self: Tokenizer,
-        dictionary: str,
-        use_original: bool
+        version: str,
+        extract_dir: str,
+        base: bool,
+        logger: Logger,
     ) -> None:
-        super().__init__()
-        self.dictionary = dictionary
-        self.use_original = use_original
-        self._load_mecab()
+        self.version = version
+        self.extract_dir = extract_dir
+        self.base = base
+        if base:
+            self.train_fname = f"jawiki_base_{version}.txt"
+            self.temp_dir = "temp_base_" + extract_dir
+        else:
+            self.train_fname = f"jawiki_{version}.txt"
+            self.temp_dir = "temp_" + extract_dir
+        self.nprocess = get_nprocess()
+        self.logger = logger
         return
 
-    def _load_mecab(self: Tokenizer) -> None:
-        '''MeCab をロードする
-        '''
-        if os.path.isdir(self.dictionary):
-            # load local dictionary
-            self.tagger = Tagger(f'-d {self.dictionary}')
-            # original dictionary is based on IPA
-            self.offset_original = 6
+    def tokenize(self: Tokenizer) -> None:
+        if os.path.exists(self.train_fname):
+            self.logger.info("train data has already created. skip wakati.")
             return
-        elif self.dictionary not in self.INSTALLED_DICTIONARIES:
-            raise ValueError(f'dictionary not found: {self.dictionary}')
-        # load installed dictionary
-        mecab_config_path = None
-        # retrive the directory of dictionary
-        mecab_config_cands = [
-            '/usr/bin/mecab-config', '/usr/local/bin/mecab-config'
-        ]
-        for c in mecab_config_cands:
-            if os.path.exists(c):
-                mecab_config_path = c
-                break
-        if mecab_config_path is None:
-            raise SystemError(
-                'mecab-config not found. check mecab is really installed'
-            )
-        dic_dir = subprocess.run(
-            [mecab_config_path, '--dicdir'],
-            check=True, stdout=subprocess.PIPE, text=True
-        ).stdout.rstrip()
-        # retrive the dictonary
-        dic_path = None
-        if self.dictionary == 'ipa':
-            dic_cands = ['ipadic-utf8', 'ipadic']
-        elif self.dictionary == 'juman':
-            dic_cands = ['juman-utf8', 'jumandic']
-        else:  # self.dictionary == 'neologd'
-            dic_cands = ['mecab-ipadic-neologd']
-        for c in dic_cands:
-            tmpdir = os.path.join(dic_dir, c)
-            if os.path.isdir(tmpdir):
-                dic_path = tmpdir
-                break
-        if dic_path is None:
-            raise SystemError(
-                f'installed dictionary not found: {self.dictionary}'
-            )
-        # create tagger
-        self.tagger = Tagger(f'-d {dic_path}')
-        if self.dictionary == 'juman':
-            self.offset_original = 4
-        else:
-            self.offset_original = 6
+        # Create temporary directories
+        os.makedirs(self.temp_dir, exist_ok=True)
+        fnames: List[str] = glob(f"{self.extract_dir}/*/*")
+        mdirs: List[str] = list(set([x.split(os.sep)[-2] for x in fnames]))
+        for mdir in mdirs:
+            os.makedirs(os.path.join(self.temp_dir, mdir), exist_ok=True)
+        # Tokenize
+        self._tokenize(fnames=fnames)
+        # Summarize results
+        cmd = f"cat {self.temp_dir}/*/* > {self.train_fname}"
+        try:
+            subprocess.run(cmd, check=True, shell=True, text=True)
+        except (subprocess.CalledProcessError, KeyboardInterrupt) as e:
+            if os.path.exists(self.train_fname):
+                os.remove(self.train_fname)
+            raise e
         return
 
-    def parse(
-        self: Tokenizer,
-        sentence: str,
-        tags: List[Tuple[int, int]],
-    ) -> List[str]:
-        '''パースする
-
-        Args:
-            sentence (str): 文章
-            entities (List[Tuple[int, int]]): 分割しないタグの場所
-
-        Returns:
-            List[str]: 単語のリスト
-        '''
-        # オフセットと単語の Tuple のリスト
-        offs_words = list()
-        # タグの単語を予め入れておく
-        for tag in tags:
-            word = sentence[tag[0]: tag[1]]
-            offs_words.append((tag[0], word, word))
-        cur_pos = 0
-        nodes = self.tagger.parse(sentence)
-        for node in nodes.splitlines():
-            node = node.strip()
-            if node == 'EOS':
-                break
-            # このノードで出力する単語
-            try:
-                surface, feature_str = node.split('\t', 1)
-            except Exception:
-                continue
-            word = self._get_word(
-                surface=surface,
-                feature_str=feature_str
+    def _tokenize(self: Tokenizer, fnames: List[str]) -> None:
+        # Register tasks
+        request_queue: JoinableQueue = JoinableQueue()
+        result_queue: SimpleQueue = SimpleQueue()
+        task_remains: int = 0
+        fnames = glob(f"{self.extract_dir}/*/*")
+        for fname in fnames:
+            oname: str = os.path.join(self.temp_dir, *fname.split(os.sep)[1:])
+            request_queue.put(
+                TaskRequest(
+                    fname=fname,
+                    oname=oname,
+                    base=self.base,
+                )
             )
-            # タグとの交差判定
-            area = (cur_pos, cur_pos + len(surface))
-            overlapped = False
-            for tag in tags:
-                if tag[1] <= area[0]:
-                    continue
-                elif area[1] <= tag[0]:
-                    break
-                else:
-                    overlapped = True
-                    break
-            if overlapped:
-                # 交差してる
-                if area[0] < tag[0]:
-                    p_sentence = sentence[area[0]: tag[0]]
-                    p_offs_words = self._parse_gap(sentence=p_sentence)
-                    for p_ow in p_offs_words:
-                        offs_words.append((
-                            cur_pos + p_ow[0], p_ow[1], p_ow[2]
-                        ))
-                if tag[1] < area[1]:
-                    p_sentence = sentence[tag[1]: area[1]]
-                    p_offs_words = self._parse_gap(sentence=p_sentence)
-                    for p_ow in p_offs_words:
-                        offs_words.append((
-                            cur_pos + (tag[1] - area[0]) + p_ow[0],
-                            p_ow[1], p_ow[2]
-                        ))
-            else:
-                # 交差してない
-                offs_words.append((cur_pos, surface, word))
-            cur_pos = self._next_position(
-                cur_pos=cur_pos, surface=surface, sentence=sentence
+            task_remains += 1
+        message_queue: Queue = Queue()
+        listener: QueueListener = QueueListener(
+            message_queue,
+            *self.logger.handlers,
+            respect_handler_level=True,
+        )
+        listener.start()
+        # Kick gnomes
+        procs: List[Process] = list()
+        for i in range(self.nprocess):
+            proc: Process = Process(
+                target=gnome_worker,
+                args=(
+                    i + 1,
+                    request_queue,
+                    result_queue,
+                    message_queue,
+                    self.logger.level,
+                ),
             )
-        # オフセット順に並べ替え
-        offs_words = sorted(offs_words, key=lambda x: x[0])
-        # 単語のリストにして返す
-        return [x[2] for x in offs_words]
-
-    def _get_word(
-        self: Tokenizer,
-        surface: str,
-        feature_str: str
-    ) -> str:
-        '''出力したい単語を得る
-
-        Args:
-            surface (str): 表層系（文章に出てきたそのままの単語）
-            feature_str (str): MeCabで得られた単語の特徴（カンマ区切り）
-
-        Returs:
-            str: 出力したい単語
-        '''
-        features = [x.strip() for x in feature_str.strip().split(',')]
-        if self.use_original:
-            if (
-                len(features) <= self.offset_original
-            ) or (
-                features[self.offset_original] == '*'
-            ):
-                # Unknown
-                word = surface[:]
-            else:
-                word = features[self.offset_original]
-        else:
-            word = surface[:]
-        return word
-
-    def _parse_gap(
-        self: Tokenizer,
-        sentence: str,
-    ) -> List[Tuple[int, str, str]]:
-        '''重なり合っていない隙間をパースする
-
-        Args:
-            sentence (str): 文章
-
-        Returns:
-            List[Tuple[int, str, str]]: start, surface, word のリスト
-        '''
-        offs_words = list()
-        cur_pos = 0
-        nodes = self.tagger.parse(sentence)
-        for node in nodes.splitlines():
-            node = node.strip()
-            if node == 'EOS':
-                break
-            # このノードで出力する単語
-            try:
-                surface, feature_str = node.split('\t', 1)
-            except Exception:
-                continue
-            word = self._get_word(
-                surface=surface,
-                feature_str=feature_str
-            )
-            offs_words.append((cur_pos, surface, word))
-            cur_pos = self._next_position(
-                cur_pos=cur_pos, surface=surface, sentence=sentence
-            )
-        return offs_words
-
-    def _next_position(
-        self: Tokenizer,
-        cur_pos: int,
-        surface: str,
-        sentence: str
-    ) -> int:
-        '''次のポジションを返す
-
-        Args:
-            cur_pos (int): current position
-            surface (str): 表層系（文章に出てきたそのままの単語）
-            sentence (str): 元の文章
-
-        Returns:
-            int: 次のポジション
-        '''
-        next_pos = cur_pos + len(surface)
-        while next_pos < len(sentence) and sentence[next_pos] == ' ':
-            next_pos += 1
-        return next_pos
+            procs.append(proc)
+            proc.start()
+        # Show progress bar
+        pbar = tqdm(total=task_remains)
+        while task_remains > 0:
+            _ = result_queue.get()
+            pbar.update()
+            task_remains -= 1
+        pbar.close()
+        # Wait for gnomes exit
+        request_queue.join()
+        request_queue.put(None)
+        for proc in procs:
+            proc.join()
+        listener.stop()
+        message_queue.close()
+        request_queue.close()
+        result_queue.close()
+        return

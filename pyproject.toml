@@ -9,22 +9,35 @@ license = "MIT License"
 python = "^3.9"
 requests = "^2.27.1"
 beautifulsoup4 = "^4.10.0"
-mecab-python3 = "^1.0.4"
 neologdn = "^0.5.1"
 gensim = "^4.1.2"
 python-Levenshtein = "^0.12.2"
 wikiextractor = "^3.0.6"
 tqdm = "^4.64.1"
 fasttext-wheel = "^0.9.2"
+numpy = "^1.24.1"
+fugashi = "^1.2.1"
 
 [tool.poetry.group.dev.dependencies]
+black = "^23.1.0"
+flake8 = "4.0.1"
+mypy = "^1.0.0"
 pytest = "^7.2.0"
 pytest-cov = "^4.0.0"
-pyproject-flake8 = "^6.0.0.post1"
+pytest-flake8 = "^1.1.1"
+pytest-mypy = "^0.10.3"
+python-lsp-server = "^1.7.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.scripts]
-test = "scripts:test"
+# [tool.flake8]
+# -> .flake8
+
+[tool.black]
+line-length = 79
+include = "\\.pyi?$"
+
+[tool.mypy]
+ignore_missing_imports = true
