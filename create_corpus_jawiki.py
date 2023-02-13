@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from __future__ import annotations
 import sys
@@ -28,7 +28,8 @@ def main() -> None:
         "--version",
         type=str,
         default="none",
-        help="Wikipedia version (YYYYMMDD)",
+        metavar="YYYYMMDD",
+        help="Wikipedia version",
     )
     parser.add_argument(
         "-b", "--base", action="store_true", help="use base form"

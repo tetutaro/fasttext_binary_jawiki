@@ -3,7 +3,19 @@
 from typing import List, Tuple, Optional
 import os
 from argparse import ArgumentParser, Namespace
+
+from fugashi import GenericTagger
 from gensim.models.keyedvectors import KeyedVectors
+
+
+def load_tagger() -> GenericTagger:
+    import unidic_cwj
+
+    dic_dir: str = unidic_cwj.dicdir
+    dic_rc: str = os.path.join(os.getcwd(), "dicrc")
+    arg: str = f"-d {dic_dir} -r {dic_rc}"
+    tagger: GenericTagger = GenericTagger(arg)
+    return tagger
 
 
 def load_kvs(version: str, base: bool) -> KeyedVectors:
@@ -18,7 +30,7 @@ def load_kvs(version: str, base: bool) -> KeyedVectors:
             kv_bins.append((entry, version))
     else:
         for fullentry in os.listdir(path="."):
-            entry: str = os.path.basenanme(fullentry)
+            entry: str = os.path.basename(fullentry)
             if not entry.endswith(".bin"):
                 continue
             prefix: str = "kv_fasttext_jawiki_"
@@ -33,9 +45,29 @@ def load_kvs(version: str, base: bool) -> KeyedVectors:
             kv_bins.append((entry, version))
     if len(kv_bins) == 0:
         raise SystemError("KeyedVectors binary not found")
-    bin_fn = sorted(kv_bins, key=lambda x: x[1], reverse=True)[0][0]
-    print(bin_fn)
-    return KeyedVectors.load_word2vec_format(bin_fn, binary=True)
+    bin_fn: str = sorted(kv_bins, key=lambda x: x[1], reverse=True)[0][0]
+    kvs: KeyedVectors = KeyedVectors.load_word2vec_format(bin_fn, binary=True)
+    cnt: int = len(kvs)
+    dim: int = kvs[0].shape[0]
+    print(f"{bin_fn}: {dim} dimension {cnt} vectors")
+    return kvs
+
+
+def get_words(tagger: GenericTagger, word: str, base: bool) -> List[str]:
+    words: List[str] = list()
+    for node in tagger.parse(word).splitlines():
+        if node == "EOS":
+            break
+        try:
+            surface, baseform = node.split("\t", 1)
+        except Exception:
+            surface = node
+            baseform = ""
+        if base and baseform not in ["", "UNK"]:
+            words.append(baseform)
+        else:
+            words.append(surface)
+    return words
 
 
 def find_similar(
@@ -45,15 +77,18 @@ def find_similar(
     topn: int,
     base: bool,
 ) -> None:
+    tagger: GenericTagger = load_tagger()
     kvs: KeyedVectors = load_kvs(version=version, base=base)
     positives: List[str] = list()
     for p in pos:
-        try:
-            _ = kvs.get_vector(p)
-        except Exception:
-            print(f"「{p}」は学習済みの語彙にありません")
-        else:
-            positives.append(p)
+        ps = get_words(tagger=tagger, word=p, base=base)
+        for pps in ps:
+            try:
+                _ = kvs.get_vector(pps)
+            except Exception:
+                print(f"「{pps}」は学習済みの語彙にありません")
+            else:
+                positives.append(pps)
     if len(positives) == 0:
         raise ValueError("no valid positive word")
     negatives: Optional[List[str]]
@@ -62,12 +97,14 @@ def find_similar(
     else:
         negatives = list()
         for n in neg:
-            try:
-                _ = kvs.get_vector(n)
-            except Exception:
-                print(f"「{n}」は学習済みの語彙にありません")
-            else:
-                negatives.append(p)
+            ns = get_words(tagger=tagger, word=n, base=base)
+            for nns in ns:
+                try:
+                    _ = kvs.get_vector(nns)
+                except Exception:
+                    print(f"「{nns}」は学習済みの語彙にありません")
+                else:
+                    negatives.append(nns)
         if len(negatives) == 0:
             negatives = None
     rets: List[Tuple(str, float)] = kvs.most_similar(
@@ -75,6 +112,7 @@ def find_similar(
         negative=negatives,
         topn=topn,
     )
+    print(f"positives: {positives}, negatives: {negatives}")
     print("【結果】")
     for i, ret in enumerate(rets):
         print(f"{i + 1}. {ret[0]} : {ret[1]}")
@@ -89,6 +127,7 @@ def main() -> None:
         "pos",
         nargs="+",
         type=str,
+        metavar="POS",
         help="word[s] that contribute positively",
     )
     parser.add_argument(
@@ -102,6 +141,7 @@ def main() -> None:
         "-v",
         "--version",
         default="none",
+        metavar="YYYYMMDD",
         help="version of trained binary",
     )
     parser.add_argument(

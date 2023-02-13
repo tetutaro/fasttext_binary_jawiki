@@ -53,6 +53,7 @@ class Trainer:
             self.kv_bin = f"kv_fasttext_jawiki_{self.version}.bin"
         if os.path.exists(self.fasttext_bin):
             self.logger.info("already trained. skip training.")
+            return
         self._train()
         kv = KeyedVectors.load_word2vec_format(self.fasttext_vec, binary=False)
         kv.save_word2vec_format(self.kv_bin, binary=True)

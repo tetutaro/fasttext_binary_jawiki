@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from __future__ import annotations
 import sys
@@ -19,11 +19,12 @@ def main() -> None:
     logger.addHandler(handler)
     # get arguments
     parser: ArgumentParser = ArgumentParser(
-        description="tokenize sentence into morphemes using MeCab"
+        description="train the corpus and create word2vec format binary"
     )
     parser.add_argument(
         "file",
         type=str,
+        metavar="CORPUS",
         help="curpus file",
     )
     parser.add_argument(
