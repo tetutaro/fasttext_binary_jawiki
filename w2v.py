@@ -18,10 +18,13 @@ def load_tagger() -> GenericTagger:
     return tagger
 
 
-def load_kvs(version: str, base: bool) -> KeyedVectors:
+def load_kvs(version: str, file: str, base: bool) -> KeyedVectors:
     # find the latest binary
     kv_bins: List[Tuple[str, str]] = list()
-    if version != "none":
+    if file != "none":
+        if os.path.exists(file):
+            kv_bins.append((file, ""))
+    elif version != "none":
         if base:
             entry: str = f"kv_fasttext_jawiki_base_{version}.bin"
         else:
@@ -74,11 +77,12 @@ def find_similar(
     pos: List[str],
     neg: Optional[List[str]],
     version: str,
+    file: str,
     topn: int,
     base: bool,
 ) -> None:
     tagger: GenericTagger = load_tagger()
-    kvs: KeyedVectors = load_kvs(version=version, base=base)
+    kvs: KeyedVectors = load_kvs(version=version, file=file, base=base)
     positives: List[str] = list()
     for p in pos:
         ps = get_words(tagger=tagger, word=p, base=base)
@@ -155,6 +159,13 @@ def main() -> None:
         "--base",
         action="store_true",
         help="use base form",
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        default="none",
+        type=str,
+        help="directly indicate trained binary",
     )
     args: Namespace = parser.parse_args()
     find_similar(**vars(args))
