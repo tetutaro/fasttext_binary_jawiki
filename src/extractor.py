@@ -34,7 +34,7 @@ class Extractor:
         try:
             subprocess.run(
                 [
-                    "WikiExtractor",
+                    "wikiextractor",
                     self.filename,
                     "--json",
                     "--quiet",
