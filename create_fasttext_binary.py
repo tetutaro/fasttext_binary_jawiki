@@ -38,8 +38,8 @@ def main() -> None:
     parser.add_argument(
         "--dim",
         type=int,
-        default=200,
-        help="size of word vectors (default: 200)",
+        default=300,
+        help="size of word vectors (default: 300)",
     )
     parser.add_argument(
         "--epoch",
