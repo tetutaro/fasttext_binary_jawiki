@@ -137,3 +137,4 @@ temp_jawiki_*/
 fasttext_jawiki_*
 kv_fasttext_jawiki_*
 unidic_cwj-*-py3-none-any.whl
+*.jsonl
