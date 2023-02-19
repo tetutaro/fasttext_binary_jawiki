@@ -50,8 +50,8 @@ def main() -> None:
     parser.add_argument(
         "--mincount",
         type=int,
-        default=20,
-        help="minimal number of word occurrences (default: 20)",
+        default=10,
+        help="minimal number of word occurrences (default: 10)",
     )
     args: Namespace = parser.parse_args()
     trainer: Trainer = Trainer(**vars(args), logger=logger)
